@@ -1,0 +1,17 @@
+{
+  "name": "lattice-grid-demo-earthquakes",
+  "version": "1.0.0",
+  "description": "A live dashboard of worldwide earthquakes, from the United States Geological Survey feeds.",
+  "type": "module",
+  "private": true,
+  "license": "MIT",
+  "scripts": {
+    "start": "node tools/serve.mjs",
+    "snapshot": "node tools/build-snapshot.mjs",
+    "preview": "node tools/build-preview.mjs",
+    "verify": "node tools/verify.mjs"
+  },
+  "dependencies": {
+    "@toclocoinc/lattice-grid": "1.60.0"
+  }
+}
