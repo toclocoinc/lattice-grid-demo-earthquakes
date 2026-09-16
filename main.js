@@ -163,13 +163,9 @@ async function start() {
     if (replay) {
       const handle = createReplay({
         rows: replay.all,
-        onBatch: (batch) => {
-          built.ingest(batch);
-          built.refreshFigures();
-        },
+        onBatch: (batch) => built.ingest(batch),
       });
       built.ingest(handle.seed);
-      built.refreshFigures();
       built.setFreshness({ replaying: true });
       built.replay = handle;
     }

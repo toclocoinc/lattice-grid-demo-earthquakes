@@ -22,7 +22,7 @@ The point of the demo is what happens after the first load. USGS publishes an au
 
 **Two datasets, not one filtered twice.** The significant tab reads a different feed, which reaches back a month. It holds earthquakes the seven day window has already dropped, so narrowing the first table could never produce it.
 
-**Figures that follow the table.** The tiles across the top read whatever the table currently matches. Turn on "Only M4.5 and above" and the counts, the charts and the tiles all move together.
+**Figures that follow the table.** The strip of tiles across the top is a KPI panel bound to the table (`createKPI(host, { grid })`), so it reads whatever the table currently matches and follows it on its own: turn on "Only M4.5 and above" and the counts, the charts and the tiles all move together, and the rows under a collapsed group still count. The one figure that is not a tile is the named largest earthquake, which is a phrase rather than a number; it is drawn by hand from the bound panel's own rows each time the panel re-reads the table. A bound panel hands a tile the grid's value for each column, and for a datetime column that is the grid's wall-clock text rather than the feed's number, so the two elapsed-time tiles read it back into an instant before doing arithmetic on it.
 
 **A feed that can fail.** If a poll cannot reach USGS the page says so and keeps showing what it already had, rather than emptying itself. If the feeds cannot be reached at all when the page opens, it shows the saved copy that ships with the demo and says so at the top.
 

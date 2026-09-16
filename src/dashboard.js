@@ -334,35 +334,21 @@ function baseGridConfig(title) {
   };
 }
 
-/* ------------------------------------------------------------------ */
-/* Reading what the grid currently matches                             */
-/* ------------------------------------------------------------------ */
-
 /**
- * Every earthquake the grid currently matches, whether or not it is grouped.
+ * A row's time as an instant.
  *
- * Walking the grid gives back what is on screen, and once the rows are
- * grouped that is a handful of headings rather than the earthquakes
- * themselves. Taking the leaves beneath each heading, keyed so an open group
- * is not counted twice, gives the same set in either arrangement.
+ * A panel bound to a grid does not hand a tile the grid's rows: it hands it a
+ * projection of each row through the grid's own value pipeline, and the value
+ * of a datetime column there is the grid's wall-clock text rather than the
+ * number the feed carried. It is read back into milliseconds before anything
+ * does arithmetic on it. A raw row, as a plain array panel would hold, is
+ * already a number.
  *
- * @param {object} grid the grid to read
- * @returns {object[]} the matched data rows
+ * @param {object} row a row, projected or raw
+ * @returns {number} milliseconds since the epoch, or NaN when there is none
  */
-function matchedRows(grid) {
-  if (!grid) return [];
-  const seen = new Map();
-  grid.rows.forEach((row) => {
-    if (!row) return;
-    if (row.group) {
-      for (const leaf of grid.rows.leavesOf(row.key) || []) {
-        if (leaf && leaf.data) seen.set(leaf.key, leaf.data);
-      }
-    } else if (row.data) {
-      seen.set(row.key, row.data);
-    }
-  });
-  return [...seen.values()];
+function timeOf(row) {
+  return typeof row.time === 'number' ? row.time : Date.parse(row.time);
 }
 
 /* ------------------------------------------------------------------ */
@@ -652,17 +638,18 @@ export function buildDashboard({
 
   const kpi = createKPI(panelHost, {
     /*
-     * Fed the earthquakes the table currently matches, rather than bound to
-     * the table.
-     *
-     * A bound panel is handed a projection of each row rather than the row
-     * itself, and a timestamp column arrives in it already written out as
-     * text. Anything doing arithmetic on a time then compares a string with a
-     * number, which is not an error in JavaScript, just quietly false. These
-     * tiles measure elapsed time, so they are given the real rows.
+     * Bound to the table. The panel reads what the table currently matches
+     * and follows it on its own: a filter, a grouping (the rows under a
+     * collapsed heading included), an arrival, a revision and a removal all
+     * reach the tiles without the host handing it anything.
      */
-    rows: [],
+    grid: built.allGrid,
     rowKey: 'id',
+    /* The columns the custom tiles and the named reading below need on each
+       projected row. `mag` is declared by the largest tile as well; the other
+       two are declared by nothing else, so without this they would not be
+       there to read. */
+    fields: ['mag', 'place', 'time'],
     columns: 5,
     ariaLabel: 'Headline figures',
     tiles: [
@@ -683,7 +670,7 @@ export function buildDashboard({
           const since = Date.now() - DAY_MS;
           let n = 0;
           for (const row of tileRows) {
-            if (typeof row.mag === 'number' && row.mag >= NOTABLE_MAG && row.time >= since) n += 1;
+            if (typeof row.mag === 'number' && row.mag >= NOTABLE_MAG && timeOf(row) >= since) n += 1;
           }
           return n;
         },
@@ -698,7 +685,10 @@ export function buildDashboard({
         thresholds: { warn: 60, critical: 240, direction: 'lowerIsBetter' },
         compute: (tileRows) => {
           let newest = 0;
-          for (const row of tileRows) if (row.time > newest) newest = row.time;
+          for (const row of tileRows) {
+            const at = timeOf(row);
+            if (at > newest) newest = at;
+          }
           if (!newest) return null;
           return Math.max(0, Math.round((Date.now() - newest) / 60000));
         },
@@ -719,51 +709,41 @@ export function buildDashboard({
   });
   built.kpi = kpi;
 
-  /** Name the largest earthquake in view, which is a phrase rather than a figure. */
-  const refreshNamedTile = (inView) => {
+  /**
+   * Name the largest earthquake in view.
+   *
+   * The one figure that is not a tile: it is a phrase with a place in it,
+   * and a tile shows a number. So it is drawn by hand, but from the bound
+   * panel's own rows rather than from a second walk of the table, each time
+   * the panel says it has re-read the table.
+   */
+  const refreshNamedTile = () => {
     let biggest = null;
-    for (const row of inView) {
-      if (typeof row.mag !== 'number') continue;
+    kpi.rows.forEach((row) => {
+      if (typeof row.mag !== 'number') return;
       if (!biggest || row.mag > biggest.mag) biggest = row;
-    }
+    });
     if (!biggest) {
       namedValue.textContent = 'No data';
       namedLabel.textContent = 'Largest earthquake in view';
       return;
     }
     namedValue.textContent = `M${magText(biggest.mag)} ${biggest.place}`;
-    namedLabel.textContent = `Largest in view, ${new Date(biggest.time).toLocaleString('en-GB')}`;
+    namedLabel.textContent = `Largest in view, ${new Date(timeOf(biggest)).toLocaleString('en-GB')}`;
   };
+  kpi.on('change', refreshNamedTile);
+  refreshNamedTile();
 
-  /**
-   * Recompute every figure from what the table currently matches.
-   *
-   * The panel does not follow the table's filters by itself, so the host
-   * hands it the matched rows: without this the tiles would keep reporting
-   * the whole window while the table showed a narrowed set.
-   */
-  const refreshFigures = () => {
-    const inView = matchedRows(built.allGrid);
-    kpi.setRows(inView);
-    refreshNamedTile(inView);
-  };
-  built.refreshFigures = refreshFigures;
-
-  built.allGrid.on('filter:changed', refreshFigures);
-  built.allGrid.on('model:changed', refreshFigures);
-  built.allGrid.on('column:grouped', refreshFigures);
-
-  /* Two of the tiles are about elapsed time, so they move on their own. */
-  const clock = setInterval(refreshFigures, 15000);
+  /* Two of the tiles are about elapsed time, so they move on their own: the
+     panel is asked to re-read the table every quarter of a minute. */
+  const clock = setInterval(() => kpi.refresh(), 15000);
 
   /*
    * The window rolls forward whether or not anything arrives. Without this
    * the oldest day would sit in the table until the next earthquake happened
    * to be reported, which on a quiet feed can be a long time.
    */
-  const windowClock = setInterval(() => {
-    if (pruneWindow() > 0) refreshFigures();
-  }, 30000);
+  const windowClock = setInterval(pruneWindow, 30000);
 
   /* ---------------- the charts ---------------- */
 
@@ -925,7 +905,6 @@ export function buildDashboard({
      */
     pruneWindow();
     ingest(result.rows);
-    refreshFigures();
     setFreshness();
   };
 
@@ -945,7 +924,6 @@ export function buildDashboard({
   built.ingest = ingest;
 
   setFreshness();
-  refreshFigures();
 
   /* ---------------- the footer ---------------- */
 
