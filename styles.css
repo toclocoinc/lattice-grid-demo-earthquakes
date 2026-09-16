@@ -301,3 +301,13 @@ body {
 .foot a {
   color: var(--accent);
 }
+
+/* Said when the saved copy is standing in for data that could not be fetched. */
+.notice {
+  background: #fdf3e3;
+  border: 1px solid #f0d9a8;
+  border-radius: 7px;
+  color: #6b4d12;
+  margin: 8px 0 0;
+  padding: 6px 10px;
+}

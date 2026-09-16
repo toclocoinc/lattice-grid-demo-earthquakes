@@ -1,9 +1,9 @@
 /**
  * Load the demo in a real browser and check that it works.
  *
- * It opens all three ways of reading the page: the saved copy, the live
- * feeds, and the single file preview from disk. Beyond "it drew something",
- * it asserts the four things this demo exists to show:
+ * Serves the project and opens the saved copy, so the check never depends on
+ * the USGS feeds being reachable. Beyond "it drew something", it asserts the
+ * four things this demo exists to show:
  *
  *   - narrowing to the notable earthquakes moves the tiles and the charts;
  *   - a revised magnitude lands on the row it belongs to rather than adding
@@ -13,12 +13,19 @@
  *   - every headline figure agrees with the saved feed data, recomputed here
  *     rather than read back off the page.
  *
+ * It then blocks the feeds in the browser and opens the live page, to prove
+ * a visitor gets the saved copy, and is told so, when USGS cannot be reached.
+ *
+ * `--all` also opens the live feeds and the single file preview from disk,
+ * which need the internet, so they are not part of the deployment gate.
+ *
  * Exits non-zero when any of that fails, so it can gate a deployment.
  *
- * Usage: node tools/verify.mjs [--shots <dir>]
+ * Usage: node tools/verify.mjs [--all] [--shots <dir>]
  */
 
 import { spawn } from 'node:child_process';
+import { createServer } from 'node:net';
 import { access, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -32,6 +39,7 @@ const root = join(here, '..');
 const args = process.argv.slice(2);
 const shotIndex = args.indexOf('--shots');
 const shotDir = shotIndex >= 0 ? resolve(args[shotIndex + 1]) : null;
+const all = args.includes('--all');
 
 const WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -61,6 +69,31 @@ async function findChrome() {
   throw new Error(`No browser found. Tried:\n  ${CHROME_CANDIDATES.join('\n  ')}\nSet CHROME_PATH to point at one.`);
 }
 
+/**
+ * This check talks to the browser over a WebSocket, which Node only provides
+ * as a global from version 22. Say so plainly rather than failing later with
+ * an unexplained missing name.
+ */
+function requireModernNode() {
+  if (typeof WebSocket === 'undefined') {
+    throw new Error(
+      `This check needs Node 22 or newer. You are running ${process.version}, which has no built in WebSocket.`,
+    );
+  }
+}
+
+/** A free TCP port, asked of the operating system. */
+function freePort() {
+  return new Promise((ok, reject) => {
+    const probe = createServer();
+    probe.on('error', reject);
+    probe.listen(0, '127.0.0.1', () => {
+      const { port } = probe.address();
+      probe.close(() => ok(port));
+    });
+  });
+}
+
 const failures = [];
 const notes = [];
 
@@ -80,6 +113,7 @@ let profile;
 let server;
 
 try {
+  requireModernNode();
   const chromePath = await findChrome();
   const started = await startServer(0);
   server = started.server;
@@ -88,7 +122,9 @@ try {
   console.log(`Serving: ${origin}`);
 
   profile = await mkdtemp(join(tmpdir(), 'quake-demo-verify-'));
-  const port = 9333;
+  /* A port of the operating system's choosing, so two checks running side by
+     side on one machine cannot land on the same debugging socket. */
+  const port = await freePort();
   /* Its own process group, so the whole browser tree can be taken down
      together rather than leaving orphaned renderers behind. */
   browser = spawn(chromePath, [
@@ -127,6 +163,14 @@ try {
   const pending = new Map();
   let consoleErrors = [];
   let pageErrors = [];
+
+  /* A browser that goes away mid-run, killed from outside or crashed, would
+     otherwise leave every call waiting for an answer that never comes. Fail
+     the run instead of hanging it. */
+  socket.onclose = () => {
+    for (const { reject } of pending.values()) reject(new Error('the browser went away before it answered'));
+    pending.clear();
+  };
 
   socket.onmessage = (event) => {
     const message = JSON.parse(event.data);
@@ -511,60 +555,111 @@ try {
   noErrors('saved copy, after the checks');
 
   /* =================================================================== */
-  /* 2. Live.                                                            */
+  /* 2. What a visitor gets when the USGS feeds cannot be reached.       */
   /* =================================================================== */
 
-  await open(`${origin}/index.html`, 'live');
-  const live = await evaluate(`(() => {
+  /*
+   * The feeds are blocked in the browser rather than asked politely to fail,
+   * so this exercises the same path a real outage takes and the demo carries
+   * no test only code. A failed request does log to the console, so the check
+   * here is that nothing was thrown and the saved copy is on screen saying so.
+   */
+  await call('Network.enable');
+  await call('Network.setBlockedURLs', { urls: ['*earthquake.usgs.gov*'] });
+  await open(`${origin}/index.html`, 'live page, with the feeds unreachable');
+  const fallback = await evaluate(`(() => {
     const d = window.__quakeDemo;
+    const notice = document.querySelector('.notice');
+    const pill = document.querySelector('.head-note .pill');
+    const freshness = document.querySelector('.freshness');
     return {
-      rows: d.allGrid.rows.count(),
-      charts: d.charts.length,
-      watermark: d.allGrid.licence.watermark(),
-      freshness: document.querySelector('.freshness').textContent,
-      tiles: Object.fromEntries(d.kpi.tiles().map((t) => [t.id, t.value])),
+      rows: d.allGrid.rows.totalCount(),
+      painted: document.querySelectorAll('.lattice [role="row"]').length,
+      fellBack: !!(d.timings && d.timings.fellBack),
+      mode: d.timings && d.timings.mode,
+      badge: pill ? pill.textContent.trim() : null,
+      notice: notice ? notice.textContent.trim() : null,
+      savedOnShown: freshness ? /saved on/i.test(freshness.textContent) : false,
+      polling: !!d.poller,
     };
   })()`);
-  console.log(`  ${live.rows} rows from the live feeds; ${live.freshness}`);
-  check(live.rows > 0, 'live: the table holds rows from the feed', `${live.rows}`);
-  check(live.charts === 4, 'live: all four charts were built', `${live.charts}`);
-  check(live.watermark === false, 'live: no watermark on localhost');
-  check(typeof live.tiles.events === 'number' && live.tiles.events > 0, 'live: the tiles read the feed', `${live.tiles.events} events`);
-  noErrors('live');
-  await shoot('05-live');
+  console.log(`  rows ${fallback.rows}, badge "${fallback.badge}", fell back: ${fallback.fellBack}`);
+  console.log(`  notice: ${fallback.notice}`);
+  check(fallback.rows > 0, 'fallback: the saved copy is on screen', `${fallback.rows} rows`);
+  check(fallback.painted > 0, 'fallback: the table painted rows', `${fallback.painted}`);
+  check(fallback.fellBack, 'fallback: the page recorded that it fell back to the saved copy');
+  check(fallback.mode === 'live', 'fallback: the page ran in the live default, not snapshot mode', `mode ${fallback.mode}`);
+  check(fallback.badge === 'Saved copy', 'fallback: the badge reads "Saved copy"', `"${fallback.badge}"`);
+  check(
+    !!fallback.notice && /could not be reached/i.test(fallback.notice),
+    'fallback: the page says the feeds were unreachable',
+    fallback.notice,
+  );
+  check(fallback.savedOnShown, "fallback: the saved copy's date is shown");
+  check(!fallback.polling, 'fallback: no poll is started against feeds that could not be reached');
+  check(pageErrors.length === 0, 'fallback: no page errors', pageErrors.slice(0, 3).join(' | '));
+  await shoot('05-fallback');
+  await call('Network.setBlockedURLs', { urls: [] });
 
-  /* A poll that fails must leave the table alone and say so. */
-  const failed = await evaluate(`(() => {
-    const d = window.__quakeDemo;
-    const before = d.allGrid.rows.count();
-    d.onPollError(new Error('a deliberate failure, for the check'));
-    return { before, after: d.allGrid.rows.count(), text: document.querySelector('.freshness').textContent, className: document.querySelector('.freshness').className };
-  })()`);
-  check(failed.after === failed.before, 'live: a failed poll does not lose the table', `${failed.before} -> ${failed.after}`);
-  check(/could not reach/i.test(failed.text), 'live: a failed poll is said out loud', failed.text);
-  check(/failed/.test(failed.className), 'live: a failed poll is marked visually', failed.className);
+  if (all) {
+    /* ================================================================= */
+    /* 3. Live.                                                          */
+    /* ================================================================= */
 
-  /* =================================================================== */
-  /* 3. The single file preview, opened from disk.                       */
-  /* =================================================================== */
+    await open(`${origin}/index.html`, 'live');
+    const live = await evaluate(`(() => {
+      const d = window.__quakeDemo;
+      return {
+        rows: d.allGrid.rows.count(),
+        charts: d.charts.length,
+        fellBack: !!(d.timings && d.timings.fellBack),
+        watermark: d.allGrid.licence.watermark(),
+        freshness: document.querySelector('.freshness').textContent,
+        tiles: Object.fromEntries(d.kpi.tiles().map((t) => [t.id, t.value])),
+      };
+    })()`);
+    console.log(`  ${live.rows} rows from the live feeds; ${live.freshness}`);
+    check(live.fellBack === false, 'live: the rows came from the feeds, not the saved copy');
+    check(live.rows > 0, 'live: the table holds rows from the feed', `${live.rows}`);
+    check(live.charts === 4, 'live: all four charts were built', `${live.charts}`);
+    check(live.watermark === false, 'live: no watermark on localhost');
+    check(typeof live.tiles.events === 'number' && live.tiles.events > 0, 'live: the tiles read the feed', `${live.tiles.events} events`);
+    noErrors('live');
+    await shoot('06-live');
 
-  await open(`file://${join(root, 'preview.html')}`, 'preview from disk');
-  const preview = await evaluate(`(() => {
-    const d = window.__quakeDemo;
-    return {
-      rows: d.allGrid.rows.count(),
-      charts: d.charts.length,
-      watermark: d.allGrid.licence.watermark(),
-      licenceState: d.allGrid.licence.state(),
-      tiles: Object.fromEntries(d.kpi.tiles().map((t) => [t.id, t.value])),
-    };
-  })()`);
-  console.log(`  ${preview.rows} rows, ${preview.charts} charts, licence ${preview.licenceState}`);
-  check(preview.rows > 0, 'preview: the table holds rows', `${preview.rows}`);
-  check(preview.charts === 4, 'preview: all four charts were built', `${preview.charts}`);
-  check(preview.watermark === false, 'preview: no watermark on file://', `state ${preview.licenceState}`);
-  noErrors('preview');
-  await shoot('06-preview-file');
+    /* A poll that fails must leave the table alone and say so. */
+    const failed = await evaluate(`(() => {
+      const d = window.__quakeDemo;
+      const before = d.allGrid.rows.count();
+      d.onPollError(new Error('a deliberate failure, for the check'));
+      return { before, after: d.allGrid.rows.count(), text: document.querySelector('.freshness').textContent, className: document.querySelector('.freshness').className };
+    })()`);
+    check(failed.after === failed.before, 'live: a failed poll does not lose the table', `${failed.before} -> ${failed.after}`);
+    check(/could not reach/i.test(failed.text), 'live: a failed poll is said out loud', failed.text);
+    check(/failed/.test(failed.className), 'live: a failed poll is marked visually', failed.className);
+
+    /* ================================================================= */
+    /* 4. The single file preview, opened from disk.                     */
+    /* ================================================================= */
+
+    await open(`file://${join(root, 'preview.html')}`, 'preview from disk');
+    const preview = await evaluate(`(() => {
+      const d = window.__quakeDemo;
+      return {
+        rows: d.allGrid.rows.count(),
+        charts: d.charts.length,
+        watermark: d.allGrid.licence.watermark(),
+        licenceState: d.allGrid.licence.state(),
+        tiles: Object.fromEntries(d.kpi.tiles().map((t) => [t.id, t.value])),
+      };
+    })()`);
+    console.log(`  ${preview.rows} rows, ${preview.charts} charts, licence ${preview.licenceState}`);
+    check(preview.rows > 0, 'preview: the table holds rows', `${preview.rows}`);
+    check(preview.charts === 4, 'preview: all four charts were built', `${preview.charts}`);
+    check(preview.watermark === false, 'preview: no watermark on file://', `state ${preview.licenceState}`);
+    noErrors('preview');
+    await shoot('07-preview-file');
+  }
 
   socket.close();
 } catch (error) {

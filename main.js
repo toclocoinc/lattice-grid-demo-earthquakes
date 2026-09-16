@@ -8,15 +8,23 @@
  *   ?source=snapshot     the saved copy in `data/snapshot`, held still
  *   ?source=snapshot&replay=1
  *                        the saved copy, fed in over time so it moves offline
+ *
+ * When the live feeds cannot be reached the page opens the saved copy instead
+ * and says so at the top, rather than showing an error.
  */
 
-import { createGrid } from './node_modules/@toclocoinc/lattice-grid/lattice-grid.esm.min.js';
+import { createGrid, setLicence } from './node_modules/@toclocoinc/lattice-grid/lattice-grid.esm.min.js';
 import { createChart } from './node_modules/@toclocoinc/lattice-grid/modules/charts.esm.min.js';
 import { createKPI } from './node_modules/@toclocoinc/lattice-grid/modules/kpi.esm.min.js';
 import { createTabs } from './node_modules/@toclocoinc/lattice-grid/modules/tabs.esm.min.js';
 import { createDataRouter } from './node_modules/@toclocoinc/lattice-grid/modules/data-router.esm.min.js';
+import { DEMO_LICENCE } from './src/licence.js';
 import { buildDashboard } from './src/dashboard.js';
 import { createReplay, fetchInitial, POLL_MS, shiftToNow, startPolling } from './src/usgs-feed.js';
+
+/* Applied before anything is drawn, because a grid that already exists keeps
+   whatever licence was in force when it was built. */
+setLicence(DEMO_LICENCE);
 
 const TITLE = 'Earthquakes around the world, as they are recorded';
 
@@ -93,23 +101,35 @@ async function start() {
       update('Building the dashboard...', 1);
     } else {
       const update = showProgress('Reading the USGS earthquake feeds...');
-      const initial = await fetchInitial({ onProgress: update });
-      rows = initial.rows;
-      significantIds = initial.significantIds;
-      meta = {
-        live: true,
-        fetchedAt: Date.now(),
-        feeds: initial.feeds.map((feed) => ({ name: feed.name, title: feed.title, generated: feed.generated, count: feed.count })),
-      };
+      try {
+        const initial = await fetchInitial({ onProgress: update });
+        rows = initial.rows;
+        significantIds = initial.significantIds;
+        meta = {
+          live: true,
+          fetchedAt: Date.now(),
+          feeds: initial.feeds.map((feed) => ({ name: feed.name, title: feed.title, generated: feed.generated, count: feed.count })),
+        };
+      } catch (liveError) {
+        /* The feeds are out of our hands, so a bad day for them should not be
+           a blank page here. The saved copy shows the same dashboard, and the
+           masthead says plainly that is what you are looking at. */
+        console.warn('[earthquake demo] the live fetch failed, falling back to the saved copy:', liveError);
+        update('The USGS earthquake feeds could not be reached. Opening the saved copy...', 1);
+        const saved = await loadSnapshot();
+        rows = saved.rows;
+        meta = { ...saved.meta, live: false, fellBack: true };
+      }
     }
 
     const fetched = performance.now();
 
     /*
      * The saved copy is shifted forward so the newest saved event lands on
-     * now. The window is always the last seven days, so without the shift a
-     * copy saved a fortnight ago would open with an empty table. The page
-     * says plainly that this is what it is doing.
+     * now, whether it was asked for by name or is standing in for feeds that
+     * could not be reached. The window is always the last seven days, so
+     * without the shift a copy saved a fortnight ago would open with an empty
+     * table. The page says plainly that this is what it is doing.
      *
      * `?replay=1` goes further and releases the last stretch a batch at a
      * time, so the saved copy also moves.
@@ -117,10 +137,10 @@ async function start() {
     let replay = null;
     let seedRows = rows;
     let shiftMs = 0;
-    if (mode === 'snapshot') {
+    if (!meta.live) {
       const shifted = shiftToNow(rows);
       shiftMs = shifted.shiftMs;
-      if (replayWanted) {
+      if (mode === 'snapshot' && replayWanted) {
         replay = { all: shifted.rows };
         seedRows = [];
       } else {
@@ -154,8 +174,11 @@ async function start() {
       built.replay = handle;
     }
 
+    /* Not started after a fallback: the saved rows have been shifted in time,
+       and a poll that later got through would mix real timestamps in with
+       them. The masthead says that reloading tries the feeds again. */
     let poller = null;
-    if (mode === 'live') {
+    if (mode === 'live' && meta.live) {
       poller = startPolling({
         significantIds,
         intervalMs: POLL_MS,
@@ -168,6 +191,7 @@ async function start() {
     const finished = performance.now();
     const timings = {
       mode: replay ? 'replay' : mode,
+      fellBack: !!meta.fellBack,
       rows: built.allGrid ? built.allGrid.rows.count() : 0,
       loaded: rows.length,
       fetchMs: Math.round(fetched - started),

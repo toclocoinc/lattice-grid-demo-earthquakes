@@ -422,6 +422,20 @@ export function buildDashboard({
         'and a revision lands on the row it belongs to rather than adding a second one.',
     ),
   );
+  /*
+   * When the live feeds could not be reached the saved copy is shown instead,
+   * and this says so. A reader should never have to wonder whether the
+   * figures in front of them are today's.
+   */
+  if (meta.fellBack) {
+    heading.append(
+      el(
+        'p',
+        'notice',
+        'The USGS earthquake feeds could not be reached, so this is the saved copy. Reloading the page will try again.',
+      ),
+    );
+  }
   header.append(heading);
 
   const provenance = el('div', 'head-note');
