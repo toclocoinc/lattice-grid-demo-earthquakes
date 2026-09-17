@@ -750,21 +750,12 @@ export function buildDashboard({
   const chartSpecs = [
     {
       type: 'histogram',
-      x: 'mag',
-      /* The measure is named even though a histogram counts: without a `y`
-         every bar comes back with no height and the chart draws nothing. */
-      y: 'count',
+      /* A histogram is given the column to bin, as the measure, and bins it
+         itself. */
+      y: 'mag',
       buckets: 14,
       title: 'How many earthquakes at each magnitude',
-      /*
-       * The bars and their order are right, lowest magnitude on the left.
-       * The numbers along the bottom are band numbers rather than
-       * magnitudes, so the axis is titled to say so: asking for the labels
-       * to be hidden has no effect on this chart type, and a bare row of
-       * numbers that looked like magnitudes would be worse than a row that
-       * is plainly labelled as bands.
-       */
-      axis: { x: 'Magnitude band, lowest to highest', y: 'Earthquakes' },
+      axis: { x: 'Magnitude', y: 'Earthquakes' },
       legend: false,
     },
     {
