@@ -311,3 +311,50 @@ body {
   margin: 8px 0 0;
   padding: 6px 10px;
 }
+
+/* Phones: the page scrolls as a whole, and each block gets room of its own. */
+@media (max-width: 720px) {
+  html,
+  body {
+    height: auto;
+  }
+
+  #app {
+    height: auto;
+    padding: 14px 12px 12px;
+  }
+
+  .head-note {
+    align-items: flex-start;
+    flex-wrap: wrap;
+  }
+
+  .freshness {
+    white-space: normal;
+  }
+
+  .kpi-strip {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .chart-wrap {
+    grid-template-columns: minmax(0, 1fr);
+    height: auto;
+  }
+
+  .chart-box {
+    height: 240px;
+  }
+
+  .tabs-host {
+    flex: none;
+    height: 560px;
+  }
+
+  .kpi-named-value,
+  .kpi-named-label {
+    overflow: visible;
+    text-overflow: clip;
+    white-space: normal;
+  }
+}
