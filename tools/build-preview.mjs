@@ -23,6 +23,8 @@ const pkgDir = join(root, 'node_modules', '@toclocoinc', 'lattice-grid');
 const installed = JSON.parse(await readFile(join(pkgDir, 'package.json'), 'utf8'));
 const VERSION = installed.version;
 const CDN = `https://cdn.latticegrid.dev/lattice-grid@${VERSION}`;
+/** Cache stamp on every library URL, so a rebuilt page never loads a stale cached file. */
+const STAMP = process.env.GRID_STAMP || new Date().toISOString().slice(0, 10).replaceAll('-', '');
 
 /** The library files the preview loads, as paths inside the package. */
 const CDN_FILES = [
@@ -263,7 +265,7 @@ ${pageCss}
 
     <script id="quake-data" type="application/json">${safeJSON(packed)}</script>
 
-${CDN_FILES.map((file) => `    <script src="${CDN}/${file}"></script>`).join('\n')}
+${CDN_FILES.map((file) => `    <script src="${CDN}/${file}?v=${STAMP}"></script>`).join('\n')}
 
     <script>
 ${flatten(feedSrc)}
